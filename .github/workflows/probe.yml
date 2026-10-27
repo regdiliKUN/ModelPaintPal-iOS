@@ -59,13 +59,25 @@ jobs:
           python -m pip show kivy-ios | sed -n '1,3p'
           which toolchain
 
+      - name: 复用上次编译结果
+        # 工具链产物落在仓库的 build/ 和 dist/ 下，全量编译约 22 分钟。
+        # 缓存命中时只重编改动过的 recipe。改了 recipe 列表就把 v1 往上加。
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            dist
+          key: kivy-ios-v1-${{ runner.os }}-${{ hashFiles('.github/workflows/probe.yml') }}
+          restore-keys: |
+            kivy-ios-v1-${{ runner.os }}-
+
       - name: 编译工具链（真机 + 模拟器）
         run: |
           set -o pipefail
           toolchain build python3 kivy pillow $PLATFORMS \
             2>&1 | tee "$RUNNER_TEMP/toolchain-build.log"
-          toolchain status || true
-          du -sh ~/.kivy-ios
+          toolchain status | grep -E "Build OK|Not built" || true
+          du -sh build dist || true
 
       - name: 生成 Xcode 工程
         run: |

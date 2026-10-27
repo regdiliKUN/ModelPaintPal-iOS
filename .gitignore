@@ -1,5 +1,6 @@
 # 构建产物
 probepal-ios/
+dist/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 build/
