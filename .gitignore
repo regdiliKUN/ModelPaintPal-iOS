@@ -1,0 +1,24 @@
+# 构建产物
+probepal-ios/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+build/
+build-device/
+DerivedData/
+*.ipa
+*.dSYM.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 临时
+*.log
+*.tmp

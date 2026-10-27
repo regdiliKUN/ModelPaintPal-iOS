@@ -1,0 +1,133 @@
+name: iOS 探针
+
+# 这个工作流的唯一任务：证明 kivy-ios 能在 Xcode 26 / iOS 26 SDK 下
+# 编出能启动的 Kivy 应用。它不产出可上架的包，只产出结论和证据。
+#
+# 手动触发，或改动探针代码时触发。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "probe/**"
+      - ".github/workflows/probe.yml"
+      - ".github/scripts/**"
+
+concurrency:
+  group: ios-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: 编译 + 模拟器取证
+    runs-on: macos-26
+    timeout-minutes: 200
+    env:
+      PLATFORMS: "--platform iphoneos-arm64 --platform iphonesimulator-arm64"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境清单
+        run: |
+          echo "::group::系统"
+          sw_vers
+          uname -m
+          echo "::endgroup::"
+          echo "::group::Xcode"
+          xcodebuild -version
+          echo "iPhoneOS SDK:      $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "Simulator SDK:     $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          echo "::endgroup::"
+          echo "::group::模拟器运行时"
+          xcrun simctl list runtimes
+          echo "::endgroup::"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装构建依赖
+        run: |
+          for pkg in autoconf automake libtool pkg-config; do
+            brew list "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+          done
+          brew link --overwrite libtool || true
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install "cython<3.2" kivy-ios
+          python -m pip show kivy-ios | sed -n '1,3p'
+          which toolchain
+
+      - name: 编译工具链（真机 + 模拟器）
+        run: |
+          set -o pipefail
+          toolchain build python3 kivy pillow $PLATFORMS \
+            2>&1 | tee "$RUNNER_TEMP/toolchain-build.log"
+          toolchain status || true
+          du -sh ~/.kivy-ios
+
+      - name: 生成 Xcode 工程
+        run: |
+          toolchain create probepal probe
+          ls -la
+          ls -la probepal-ios
+
+      - name: 编译模拟器包
+        run: |
+          set -o pipefail
+          cd probepal-ios
+          xcodebuild -project probepal.xcodeproj -scheme probepal \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee "$RUNNER_TEMP/xcode-sim.log" | tail -n 100
+
+      - name: 模拟器里跑起来并截图
+        id: sim
+        run: |
+          APP=$(find probepal-ios/build -maxdepth 6 -name "*.app" -type d | head -n 1)
+          echo "app=$APP"
+          du -sh "$APP"
+          python3 .github/scripts/sim_probe.py "$APP" "$RUNNER_TEMP/probe-out"
+
+      - name: 编译真机包（不签名，只验证 arm64 产物能否成形）
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cd probepal-ios
+          xcodebuild -project probepal.xcodeproj -scheme probepal \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build-device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee "$RUNNER_TEMP/xcode-device.log" | tail -n 100
+
+      - name: 收拢证据
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/probe-out"
+          cp "$RUNNER_TEMP"/*.log "$RUNNER_TEMP/probe-out/" 2>/dev/null || true
+          cp ~/Library/Logs/DiagnosticReports/*.ips "$RUNNER_TEMP/probe-out/" 2>/dev/null || true
+          ls -la "$RUNNER_TEMP/probe-out"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-run-${{ github.run_number }}
+          path: ${{ runner.temp }}/probe-out/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 结论
+        if: always()
+        run: |
+          echo "### 探针结论" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/probe-out/status.txt" ]; then
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/probe-out/status.txt" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "没有拿到 status.txt —— 应用没能起来，去看 artifact 里的日志。" >> "$GITHUB_STEP_SUMMARY"
+          fi
